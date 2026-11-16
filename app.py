@@ -65,6 +65,17 @@ def health():
     return "ok"
 
 
+@app.get("/api/email-status")
+def email_status():
+    # Report readiness without ever exposing a key or sender credential.
+    if os.environ.get("BREVO_API_KEY") and os.environ.get("MAIL_FROM"):
+        return jsonify(configured=True, provider="Brevo")
+    if (os.environ.get("SMTP_HOST") and os.environ.get("SMTP_USER")
+            and os.environ.get("SMTP_PASS")):
+        return jsonify(configured=True, provider="SMTP")
+    return jsonify(configured=False, provider="console")
+
+
 # ---------- auth ----------
 @app.post("/api/register")
 def register():
@@ -113,7 +124,7 @@ def events():
 def create_event(u):
     d = body()
     eid = svc.create_event(d.get("name"), d.get("description"), d.get("location"),
-                           d.get("starts_at"), d.get("capacity"))
+                           d.get("starts_at"), d.get("capacity"), d.get("category"))
     return jsonify(id=eid), 201
 
 
@@ -156,3 +167,4 @@ def outbox(u):
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
+
