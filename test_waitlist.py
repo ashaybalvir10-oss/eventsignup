@@ -1,4 +1,5 @@
 import contextlib, io, os, tempfile, unittest
+from unittest.mock import patch
 
 DB = tempfile.mktemp(suffix=".db")
 os.environ["DB_PATH"] = DB
@@ -62,6 +63,7 @@ class TestService(unittest.TestCase):
         self.u = {n: self.s.register(n, f"{n}@x.com", "password123") for n in "abcd"}
 
     def tearDown(self):
+        self.s.close()
         os.path.exists(self.path) and os.remove(self.path)
 
     def test_first_user_is_admin_only(self):
@@ -90,6 +92,26 @@ class TestService(unittest.TestCase):
         self.assertEqual((ev["confirmed"], ev["waitlist_length"], ev["my_position"]), (2, 1, 1))
         self.assertTrue(any("spot opened" in m["subject"] for m in self.s.outbox()))
 
+    def test_event_category_is_saved_and_validated(self):
+        music_id = self.s.create_event("Open Mic", "", "Hall", "", 20, "music")
+        event = next(e for e in self.s.list_events() if e["id"] == music_id)
+        self.assertEqual(event["category"], "music")
+        with self.assertRaises(EventError):
+            self.s.create_event("Mystery", "", "", "", 5, "not-a-category")
+
+    def test_existing_database_gets_category_column(self):
+        legacy_path = tempfile.mktemp(suffix=".db")
+        import sqlite3
+        db = sqlite3.connect(legacy_path)
+        db.execute("CREATE TABLE events(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL,description TEXT DEFAULT '',location TEXT DEFAULT '',starts_at TEXT DEFAULT '',capacity INTEGER NOT NULL CHECK(capacity > 0))")
+        db.execute("INSERT INTO events(name,capacity) VALUES('Old event',10)")
+        db.commit(); db.close()
+        migrated = EventService(legacy_path)
+        event = migrated.list_events()[0]
+        self.assertEqual(event["category"], "other")
+        migrated.db.close()
+        os.remove(legacy_path)
+
     def test_leave_waitlist_and_duplicate(self):
         ids = [self.u[n]["id"] for n in "abc"]
         for i in ids:
@@ -103,6 +125,7 @@ class TestService(unittest.TestCase):
             self.s.signup(self.u[n]["id"], self.eid)
         s2 = EventService(self.path)
         self.assertEqual([x[0] for x in s2.queues[self.eid].to_list()], ["c@x.com", "d@x.com"])
+        s2.close()
 
 
 class TestHTTP(unittest.TestCase):
@@ -110,10 +133,12 @@ class TestHTTP(unittest.TestCase):
     def setUpClass(cls):
         os.environ["ADMIN_EMAILS"] = "boss@x.com"      # also tests the ADMIN_EMAILS setting
         import app as appmod
+        cls.appmod = appmod
         cls.app = appmod.app
 
     @classmethod
     def tearDownClass(cls):
+        cls.appmod.svc.close()
         os.environ.pop("ADMIN_EMAILS", None)
 
     def client(self):
@@ -124,7 +149,10 @@ class TestHTTP(unittest.TestCase):
         r = admin.post("/api/register", json={"name": "Boss", "email": "boss@x.com", "password": "password123"})
         self.assertEqual(r.status_code, 201)
         self.assertTrue(r.get_json()["user"]["is_admin"])
-        eid = admin.post("/api/events", json={"name": "Meetup", "capacity": 1}).get_json()["id"]
+        created = admin.post("/api/events", json={"name": "Meetup", "capacity": 1, "category": "sports"})
+        eid = created.get_json()["id"]
+        self.assertEqual(admin.get("/api/events").get_json()[0]["category"], "sports")
+        self.assertEqual(anon.get("/api/email-status").status_code, 200)
 
         user.post("/api/register", json={"name": "Una", "email": "una@x.com", "password": "password123"})
         self.assertEqual(user.post("/api/events", json={"name": "Hack", "capacity": 5}).status_code, 403)
@@ -143,6 +171,11 @@ class TestHTTP(unittest.TestCase):
         r = c.post("/api/login", data={"email": "x@x.com", "password": "password123"})  # not JSON
         self.assertEqual(r.status_code, 400)
 
+    def test_email_status_reports_provider_without_credentials(self):
+        with patch.dict(os.environ, {"BREVO_API_KEY": "test-secret", "MAIL_FROM": "sender@example.test"}):
+            response = self.client().get("/api/email-status")
+        self.assertEqual(response.get_json(), {"configured": True, "provider": "Brevo"})
+
     def test_login_lockout(self):
         c = self.client()
         c.post("/api/register", json={"name": "Lee", "email": "lee@x.com", "password": "password123"})
@@ -155,3 +188,4 @@ class TestHTTP(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
