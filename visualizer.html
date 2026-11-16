@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Waitlist Queue Visualizer</title>
+<style>
+:root{--bg:#fff;--fg:#1a1a1a;--muted:#666;--card:#f6f6f4;--line:#d8d8d4;--node:#e8f0fe;--nodeb:#4a76d4;--head:#1d8a4e;--tail:#c4570c;--ok:#1d8a4e}
+@media (prefers-color-scheme:dark){:root{--bg:#161616;--fg:#eee;--muted:#999;--card:#202020;--line:#3a3a3a;--node:#1f2d4a;--nodeb:#6d97ee;--head:#4cc27f;--tail:#f08a4b;--ok:#4cc27f}}
+*{box-sizing:border-box}
+body{font-family:system-ui,sans-serif;background:var(--bg);color:var(--fg);max-width:980px;margin:1.5rem auto;padding:0 1rem}
+h1{font-size:1.4rem;margin:.2rem 0}h2{font-size:1rem;margin:0 0 .6rem}
+a{color:var(--nodeb)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:1rem;margin:1rem 0}
+select,input,button{font:inherit;padding:.45rem .6rem;border-radius:6px;border:1px solid var(--line);background:var(--bg);color:var(--fg)}
+button{cursor:pointer}button.primary{background:var(--nodeb);color:#fff;border-color:var(--nodeb)}
+.row{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center}
+.muted{color:var(--muted);font-size:.85rem}
+.chain{display:flex;align-items:center;overflow-x:auto;padding:2.2rem .5rem 1rem;min-height:130px}
+.cell{display:flex;align-items:center}
+.node{position:relative;border:2px solid var(--nodeb);background:var(--node);border-radius:8px;min-width:130px;padding:.4rem .6rem;text-align:center}
+.node b{display:block;font-size:.9rem}.node span{font-size:.72rem;color:var(--muted);word-break:break-all}
+.node .ptr{display:block;margin-top:.3rem;padding-top:.3rem;border-top:1px dashed var(--nodeb);font-size:.7rem;color:var(--muted)}
+.tag{position:absolute;top:-1.5rem;left:50%;transform:translateX(-50%);font-size:.7rem;font-weight:700;padding:.1rem .45rem;border-radius:4px;color:#fff;white-space:nowrap}
+.tag.head{background:var(--head)}.tag.tail{background:var(--tail)}
+.tag.both{background:linear-gradient(90deg,var(--head) 50%,var(--tail) 50%)}
+.arrow{width:34px;height:2px;background:var(--nodeb);position:relative;flex:none}
+.arrow:after{content:"";position:absolute;right:-1px;top:-4px;border-left:8px solid var(--nodeb);border-top:5px solid transparent;border-bottom:5px solid transparent}
+.null{border:2px dashed var(--line);border-radius:8px;padding:.5rem .8rem;color:var(--muted);font-size:.8rem;flex:none}
+.empty{color:var(--muted);padding:1rem}
+@keyframes pop{from{opacity:0;transform:scale(.6)}to{opacity:1;transform:scale(1)}}
+@keyframes flash{0%,100%{box-shadow:none}30%{box-shadow:0 0 0 4px var(--head)}}
+.new{animation:pop .4s ease-out}.promo{animation:flash 1s}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
+@media(max-width:700px){.grid{grid-template-columns:1fr}}
+.chip{display:inline-block;background:var(--bg);border:1px solid var(--line);border-radius:5px;padding:.15rem .5rem;margin:.15rem;font-size:.78rem;font-family:ui-monospace,monospace}
+.log div{font-size:.8rem;padding:.3rem 0;border-bottom:1px solid var(--line)}
+.log .op{display:inline-block;width:4.8rem;font-weight:700;font-family:ui-monospace,monospace}
+.op.enqueue{color:var(--nodeb)}.op.dequeue{color:var(--head)}.op.remove{color:var(--tail)}
+.bar{height:10px;background:var(--line);border-radius:5px;overflow:hidden;margin:.4rem 0}
+.bar i{display:block;height:100%;background:var(--ok);transition:width .4s}
+#msg{min-height:1.3rem;font-size:.85rem}
+</style></head><body>
+<h1>Waitlist as a linked-list queue</h1>
+<div class="muted"><a href="/">&larr; Back to events</a> &middot; updates automatically every 2 seconds</div>
+
+<div class="card">
+  <div class="row">
+    <label>Event <select id="ev"></select></label>
+    <span class="muted">New event:</span>
+    <input id="en" placeholder="Name" size="12"><input id="ec" type="number" min="1" placeholder="Capacity" style="width:6rem">
+    <button onclick="newEvent()">Create</button>
+  </div>
+</div>
+
+<div class="card">
+  <h2 id="title">Admin only: select or create an event</h2>
+  <div class="bar"><i id="fill" style="width:0"></i></div>
+  <div class="muted" id="cap"></div>
+  <div class="row" style="margin-top:.8rem">
+    <input id="m" placeholder="User email" size="26">
+    <button onclick="removeUser()">Remove registration</button>
+    <button class="primary" onclick="autoFill()">+ Add 5 demo people</button>
+  </div>
+  <div id="msg"></div>
+</div>
+
+<div class="card">
+  <h2>Waitlist: singly linked list (front of line &rarr; back)</h2>
+  <div class="chain" id="chain"></div>
+  <div class="muted">HEAD is the next person promoted (dequeue, O(1)). TAIL is where new people join (enqueue, O(1)).</div>
+</div>
+
+<div class="grid">
+  <div class="card"><h2>Hash map (email &rarr; node)</h2><div id="hash"></div>
+    <div class="muted" style="margin-top:.5rem">Lets us answer "already waiting?" in O(1).</div></div>
+  <div class="card"><h2>Operation log</h2><div class="log" id="log"></div></div>
+</div>
+<div class="card"><h2>Confirmed attendees</h2><div id="conf"></div></div>
+
+<script>
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const api=(u,m="GET",b)=>fetch(u,{method:m,headers:{"Content-Type":"application/json"},body:b&&JSON.stringify(b)}).then(r=>r.json());
+let seen=new Set(), lastHead=null, first=true;
+
+async function loadEvents(keep){
+  const evs=await api("/api/events");
+  const cur=keep??$("ev").value;
+  $("ev").innerHTML=evs.map(e=>`<option value="${e.id}">${esc(e.name)} (${e.confirmed}/${e.capacity})</option>`).join("");
+  if(cur&&evs.some(e=>String(e.id)===String(cur)))$("ev").value=cur;
+  $("ev").onchange=()=>{seen=new Set();first=true;refresh()};
+  refresh();
+}
+async function newEvent(){
+  const r=await api("/api/events","POST",{name:$("en").value,capacity:+$("ec").value});
+  if(r.error){say(r.error,1);return}
+  $("en").value=$("ec").value="";seen=new Set();first=true;loadEvents(r.id);
+}
+function say(t,err){$("msg").textContent=t;$("msg").style.color=err?"var(--tail)":"var(--ok)"}
+
+async function removeUser(){
+  const id=$("ev").value;if(!id)return;
+  const r=await api(`/api/events/${id}/remove`,"POST",{email:$("m").value});
+  if(r.error)say(r.error,1);
+  else say(r.promoted?`Removed. ${r.promoted} was promoted from the head of the queue and emailed.`:"Removed.");
+  refresh();
+}
+async function autoFill(){
+  const id=$("ev").value;if(!id)return;
+  const r=await api(`/api/events/${id}/demo`,"POST",{});
+  say(r.error||"Added 5 demo users (reserved .invalid emails, so nothing is really sent).",!!r.error);refresh();
+}
+
+async function refresh(){
+  const id=$("ev").value;if(!id)return;
+  const d=await api(`/api/events/${id}/structure`);
+  if(d.error){$("title").textContent=d.error+" - sign in as admin on the main page";return}
+  const e=d.event,q=d.queue;
+  $("title").textContent=e.name;
+  $("fill").style.width=(100*e.confirmed/e.capacity)+"%";
+  $("cap").textContent=`${e.confirmed} of ${e.capacity} spots filled, ${q.size} on waitlist`;
+
+  if(!q.nodes.length){$("chain").innerHTML='<div class="empty">Queue is empty: head = None, tail = None</div>'}
+  else{
+    $("chain").innerHTML=q.nodes.map((nd,i)=>{
+      const isH=nd.key===q.head,isT=nd.key===q.tail;
+      const tag=isH&&isT?'<span class="tag both">HEAD / TAIL</span>':isH?'<span class="tag head">HEAD</span>':isT?'<span class="tag tail">TAIL</span>':"";
+      const cls=(!first&&!seen.has(nd.key))?" new":(!first&&isH&&lastHead&&lastHead!==nd.key)?" promo":"";
+      return `<div class="cell"><div class="node${cls}">${tag}<b>#${i+1} ${esc(nd.name)}</b><span>${esc(nd.key)}</span>
+        <span class="ptr">next &rarr; ${nd.next?esc(nd.next.split("@")[0]):"None"}</span></div>
+        <div class="arrow"></div></div>`}).join("")+'<div class="null">None</div>';
+  }
+  seen=new Set(q.nodes.map(n=>n.key));lastHead=q.head;first=false;
+
+  $("hash").innerHTML=q.hash_map.map(k=>`<span class="chip">${esc(k)}</span>`).join("")||'<span class="muted">empty</span>';
+  $("log").innerHTML=q.history.slice().reverse().map(h=>
+    `<div><span class="op ${h.op}">${h.op}</span> ${esc(h.key)}<br><span class="muted">${esc(h.note)}</span></div>`).join("")||'<span class="muted">No operations yet</span>';
+  $("conf").innerHTML=d.confirmed.map(c=>`<span class="chip">${esc(c.name)} &lt;${esc(c.email)}&gt;</span>`).join("")||'<span class="muted">nobody yet</span>';
+  loadEventsLabels();
+}
+async function loadEventsLabels(){
+  const evs=await api("/api/events"),cur=$("ev").value;
+  [...$("ev").options].forEach(o=>{const e=evs.find(x=>String(x.id)===o.value);if(e)o.textContent=`${e.name} (${e.confirmed}/${e.capacity})`});
+}
+loadEvents();setInterval(refresh,2000);
+</script></body></html>
