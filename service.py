@@ -20,7 +20,8 @@ CREATE TABLE IF NOT EXISTS users(
 CREATE TABLE IF NOT EXISTS events(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL, description TEXT DEFAULT '', location TEXT DEFAULT '',
-  starts_at TEXT DEFAULT '', capacity INTEGER NOT NULL CHECK(capacity > 0));
+  starts_at TEXT DEFAULT '', capacity INTEGER NOT NULL CHECK(capacity > 0),
+  category TEXT NOT NULL DEFAULT 'other');
 CREATE TABLE IF NOT EXISTS signups(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   event_id INTEGER NOT NULL REFERENCES events(id),
@@ -52,6 +53,11 @@ class EventService:
                                   check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.executescript(SCHEMA)
+        # Existing Render databases predate categories; add the column in place.
+        event_columns = {row["name"] for row in self.db.execute("PRAGMA table_info(events)")}
+        if "category" not in event_columns:
+            self.db.execute("ALTER TABLE events ADD COLUMN category TEXT NOT NULL DEFAULT 'other'")
+            self.db.commit()
         self.lock = threading.RLock()  # one operation at a time -> no double-booking
         self.queues = {}               # event_id -> LinkedQueue
         for r in self.db.execute(
@@ -59,6 +65,11 @@ class EventService:
                    JOIN users u ON u.id = s.user_id
                    WHERE s.status='waitlisted' ORDER BY s.id"""):
             self.queues.setdefault(r["event_id"], LinkedQueue()).enqueue(r["email"], r["name"])
+
+    def close(self):
+        """Close the SQLite connection (primarily useful for clean shutdowns and tests)."""
+        with self.lock:
+            self.db.close()
 
     # ---------- users ----------
     def _user(self, uid):
@@ -97,17 +108,20 @@ class EventService:
 
     # ---------- events ----------
     @locked
-    def create_event(self, name, description, location, starts_at, capacity):
+    def create_event(self, name, description, location, starts_at, capacity, category="other"):
         try:
             capacity = int(capacity)
         except (TypeError, ValueError):
             capacity = 0
         if not (name or "").strip() or capacity < 1:
             raise EventError("Event needs a name and a capacity of at least 1")
+        category = (category or "other").strip().lower()
+        if category not in {"music", "sports", "academics", "arts", "technology", "community", "other"}:
+            raise EventError("Choose a valid event category")
         cur = self.db.execute(
-            "INSERT INTO events(name,description,location,starts_at,capacity) VALUES (?,?,?,?,?)",
+            "INSERT INTO events(name,description,location,starts_at,capacity,category) VALUES (?,?,?,?,?,?)",
             (name.strip(), (description or "").strip(), (location or "").strip(),
-             (starts_at or "").strip(), capacity))
+             (starts_at or "").strip(), capacity, category))
         self.db.commit()
         self.queues[cur.lastrowid] = LinkedQueue()
         return cur.lastrowid
@@ -128,7 +142,7 @@ class EventService:
         q = self.queues.setdefault(eid, LinkedQueue())
         return {"id": eid, "name": ev["name"], "description": ev["description"],
                 "location": ev["location"], "starts_at": ev["starts_at"],
-                "capacity": ev["capacity"], "confirmed": confirmed,
+                "category": ev["category"], "capacity": ev["capacity"], "confirmed": confirmed,
                 "spots_left": ev["capacity"] - confirmed, "waitlist_length": len(q)}
 
     @locked
@@ -234,3 +248,4 @@ class EventService:
     @locked
     def outbox(self):
         return [dict(r) for r in self.db.execute("SELECT * FROM outbox ORDER BY id DESC LIMIT 50")]
+
